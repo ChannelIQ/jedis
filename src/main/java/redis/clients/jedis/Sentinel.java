@@ -11,7 +11,6 @@ import redis.clients.jedis.SentinelConfig.SentinelInstance;
 import redis.clients.jedis.exceptions.JedisSentinelConnectionException;
 
 public class Sentinel {
-	private static final String UNKNOWN_SERVICE_MSG = "Master could not be determined for the given service because it was never configured";
 	private final SentinelConfig config;
 	private final Map<String, SentinelServiceConfig> services;
 
@@ -28,10 +27,15 @@ public class Sentinel {
 	}
 
 	public Jedis findMaster(String masterName) throws Exception {
-		if (!services.containsKey(masterName))
-			throw new Exception(UNKNOWN_SERVICE_MSG);
-
-		SentinelServiceConfig serviceConfig = services.get(masterName);
+		SentinelServiceConfig serviceConfig;
+		if (services.containsKey(masterName)) {
+			serviceConfig = services.get(masterName);
+		} else {
+			// Allow JIT initialization of services, but the assumption is that
+			// the services have all default values (other than host and port
+			// which are supplied by Sentinel)
+			serviceConfig = new SentinelServiceConfig(masterName);
+		}
 
 		String lastIp = "";
 		Integer lastPort = 0;
@@ -137,6 +141,12 @@ public class Sentinel {
 			service.setHost(masterHost);
 			service.setPort(masterPort);
 			services.put(masterName, service);
+		} else {
+			SentinelServiceConfig serviceConfig = new SentinelServiceConfig(
+					masterName);
+			serviceConfig.setHost(masterHost);
+			serviceConfig.setPort(masterPort);
+			services.put(masterName, serviceConfig);
 		}
 	}
 

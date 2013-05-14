@@ -9,7 +9,6 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 
 import org.apache.commons.pool.impl.GenericKeyedObjectPool.Config;
-import org.junit.After;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -45,10 +44,6 @@ public class JedisSentinelTest {
 	@BeforeClass
 	public static void setup() throws InterruptedException {
 		Thread.sleep(5000);
-	}
-
-	@After
-	public void clear() {
 	}
 
 	@Test
