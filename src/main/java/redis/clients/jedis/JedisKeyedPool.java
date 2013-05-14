@@ -1,32 +1,25 @@
 package redis.clients.jedis;
 
 import org.apache.commons.pool.impl.GenericKeyedObjectPool.Config;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import redis.clients.util.KeyedPool;
 
 public class JedisKeyedPool extends KeyedPool<String, Jedis> {
+
+	private static final Logger logger = LoggerFactory
+			.getLogger(Sentinel.class);
 
 	public JedisKeyedPool(final Sentinel sentinel) {
 		this(new Config(), sentinel);
 	}
 
 	public JedisKeyedPool(final Config poolConfig, final Sentinel sentinel) {
-		this(poolConfig, sentinel, null);
-		System.out.println("Pool config (testOnBorrow) - "
-				+ poolConfig.testOnBorrow);
-		System.out.println("Pool config (maxTotal) - " + poolConfig.maxTotal);
-	}
+		super(poolConfig, new JedisServiceConnectionFactory(sentinel));
 
-	public JedisKeyedPool(final Config poolConfig, final Sentinel sentinel,
-			final String password) {
-		super(poolConfig, new JedisServiceConnectionFactory(sentinel,
-				Protocol.DEFAULT_TIMEOUT, password, Protocol.DEFAULT_DATABASE));
-	}
-
-	public JedisKeyedPool(final Config poolConfig, final Sentinel sentinel,
-			final int timeout, final String password, final int database) {
-		super(poolConfig, new JedisServiceConnectionFactory(sentinel, timeout,
-				password, database));
+		logger.debug("Pool config (testOnBorrow) - " + poolConfig.testOnBorrow);
+		logger.debug("Pool config (maxTotal) - " + poolConfig.maxTotal);
 	}
 
 	/*

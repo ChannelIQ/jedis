@@ -1,91 +1,111 @@
 package redis.clients.jedis;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import redis.clients.jedis.SentinelConfig.SentinelInstance;
 import redis.clients.jedis.exceptions.JedisSentinelConnectionException;
 
 public class Sentinel {
-	private final ArrayList<Map<String, String>> sentinels;
-	private final Map<String, HostAndPort> masterInstances = new HashMap<String, HostAndPort>();
-	private static final int SENTINEL_TIMEOUT = 2;
+	private static final String UNKNOWN_SERVICE_MSG = "Master could not be determined for the given service because it was never configured";
+	private final SentinelConfig config;
+	private final Map<String, SentinelServiceConfig> services;
 
-	public Sentinel(List<Map<String, String>> sentinels) {
-		this.sentinels = new ArrayList<Map<String, String>>(sentinels);
+	private static final Logger logger = LoggerFactory
+			.getLogger(Sentinel.class);
+
+	public Sentinel(SentinelConfig conf, SentinelServiceConfig... svcs) {
+		this.config = conf;
+
+		this.services = new HashMap<String, SentinelServiceConfig>();
+		for (SentinelServiceConfig service : svcs) {
+			this.services.put(service.getServiceName(), service);
+		}
 	}
 
-	public Jedis findMaster(String masterName) {
-		return findMaster(masterName, Protocol.DEFAULT_TIMEOUT, null,
-				Protocol.DEFAULT_DATABASE);
-	}
+	public Jedis findMaster(String masterName) throws Exception {
+		if (!services.containsKey(masterName))
+			throw new Exception(UNKNOWN_SERVICE_MSG);
 
-	public Jedis findMaster(String masterName, int timeout, String password,
-			int database) {
+		SentinelServiceConfig serviceConfig = services.get(masterName);
+
 		String lastIp = "";
 		Integer lastPort = 0;
 
-		for (Map<String, String> item : sentinels) {
-			String ip = item.get("ip");
-			Integer port = Integer.parseInt(item.get("port"));
-
-			final Jedis client = new Jedis(ip, port, SENTINEL_TIMEOUT);
+		for (SentinelInstance instance : config.getSentinelInstances()) {
+			final Jedis client = new Jedis(instance.getHost(),
+					instance.getPort(), instance.getTimeout());
 
 			try {
-				client.ping();
-				List<String> master = client
-						.sentinelGetMasterAddrByName(masterName);
+				if (isSentinelInstanceValid(instance, client)) {
 
-				System.out.println("Found master for " + masterName + " at "
-						+ master.get(0) + ":" + master.get(1)
-						+ " from Sentinel (" + ip + ":" + port + ")");
+					List<String> master = client
+							.sentinelGetMasterAddrByName(masterName);
 
-				try {
 					if (master != null) {
-						final String masterIp = master.get(0);
-						final int masterPort = Integer.parseInt(master.get(1));
+						try {
+							final String masterIp = master.get(0);
+							final int masterPort = Integer.parseInt(master
+									.get(1));
 
-						// If we already tried this ip/port combination, skip
-						// attempting again
-						if (lastIp.equals(masterIp)
-								&& lastPort.equals(masterPort))
+							logger.debug("Found master for " + masterName
+									+ " at " + masterIp + ":" + masterPort
+									+ " from Sentinel (" + instance.getHost()
+									+ ":" + instance.getPort() + ")");
+
+							// If we already tried this ip/port combination,
+							// skip
+							// attempting again. This means that each Sentinel
+							// is
+							// returning the same ip/port combination, even
+							// though
+							// it failed to connect during the first attempt
+							if (lastIp.equals(masterIp)
+									&& lastPort.equals(masterPort))
+								continue;
+
+							// Save last seen values for optimization
+							lastIp = masterIp;
+							lastPort = masterPort;
+							final Jedis masterClient = new Jedis(masterIp,
+									masterPort, serviceConfig.getTimeout());
+
+							masterClient.connect();
+							if (serviceConfig.getPassword() != null
+									&& !serviceConfig.getPassword().equals("")) {
+								masterClient.auth(serviceConfig.getPassword());
+							}
+							if (serviceConfig.getDatabase() != 0) {
+								masterClient
+										.select(serviceConfig.getDatabase());
+							}
+
+							config.electLeader(instance);
+
+							setDefaultMaster(masterName, masterIp, masterPort);
+
+							return masterClient;
+						} catch (Exception e) {
+							logger.warn("Master found on sentinel, "
+									+ instance.getHost() + ":"
+									+ instance.getPort()
+									+ " has thrown an exception - "
+									+ e.getMessage());
 							continue;
-
-						// Save last seen values for optimization
-						lastIp = masterIp;
-						lastPort = masterPort;
-						final Jedis masterClient = new Jedis(masterIp,
-								masterPort, timeout);
-
-						masterClient.connect();
-						if (null != password) {
-							masterClient.auth(password);
 						}
-						if (database != 0) {
-							masterClient.select(database);
-						}
-
-						electLeader(item);
-
-						setDefaultInstance(masterName, masterIp, masterPort);
-
-						return masterClient;
+					} else {
+						logger.debug("Skipping sentinel instance because it either did not connect or respond to ping");
 					}
-				} catch (Exception e) {
-					// TODO: Add Logging
-					System.out.println("Master found on sentinel, "
-							+ item.get("ip") + ":" + item.get("port")
-							+ " has thrown an exception - " + e.getMessage());
-					continue;
 				}
 			} catch (Exception e) {
-				// TODO: Add Logging
-				System.out.println("Sentinel (" + item.get("ip") + ":"
-						+ item.get("port") + ") has thrown an exception - "
+				logger.warn("Sentinel (" + instance.getHost() + ":"
+						+ instance.getPort() + ") has thrown an exception - "
 						+ e.getMessage());
-				deprioritizeSentinel(item);
+				config.deprioritizeSentinelInstance(instance);
 				continue;
 			}
 		}
@@ -95,38 +115,47 @@ public class Sentinel {
 				"All sentinels failed to connect.");
 	}
 
-	private void setDefaultInstance(String masterName, String masterIp,
+	private boolean isSentinelInstanceValid(SentinelInstance instance,
+			final Jedis client) {
+		client.connect();
+		if (instance.getPassword() != null
+				&& !instance.getPassword().equals("")) {
+			client.auth(instance.getPassword());
+		}
+		if (instance.getDatabase() != 0) {
+			client.select(instance.getDatabase());
+		}
+
+		return client.isConnected() && client.ping().equals("PONG");
+	}
+
+	private void setDefaultMaster(String masterName, String masterHost,
 			int masterPort) {
-		masterInstances.put(masterName, new HostAndPort(masterIp, masterPort));
-	}
-
-	public void electLeader(Map<String, String> leaderInstance) {
-		int idx = sentinels.indexOf(leaderInstance);
-
-		Collections.swap(sentinels, 0, idx);
-	}
-
-	public void deprioritizeSentinel(Map<String, String> lowestPriorityInstance) {
-		int idx = sentinels.indexOf(lowestPriorityInstance);
-
-		Collections.swap(sentinels, sentinels.size() - 1, idx);
+		if (services.containsKey(masterName)) {
+			// Update the service reference, with the current Master Host/Port
+			SentinelServiceConfig service = services.get(masterName);
+			service.setHost(masterHost);
+			service.setPort(masterPort);
+			services.put(masterName, service);
+		}
 	}
 
 	public void refreshListOfSentinels(String masterName) {
-		// TODO: Should this overwrite or combine?
 		try {
 			final Jedis jedis = findMaster(masterName);
 
-			List<Map<String, String>> _newSentinels = jedis
+			List<Map<String, String>> currentSentinels = jedis
 					.sentinelSentinels(masterName);
 
-			for (Map<String, String> item : _newSentinels) {
-				if (!sentinels.contains(item)) {
-					sentinels.add(item);
-				}
+			for (Map<String, String> item : currentSentinels) {
+				config.addSentinelInstance(item.get("ip"),
+						Integer.valueOf(item.get("port").toString()));
 			}
 		} catch (Exception ex) {
-			// TODO: Add logging
+			logger.error("An error occured while refreshing the list of Sentinels from the current Master at :"
+					+ services.get(masterName).getHost()
+					+ ":"
+					+ services.get(masterName).getPort());
 		}
 	}
 
@@ -134,47 +163,27 @@ public class Sentinel {
 	 * Lazy Attempt to determine if we are using the right master
 	 */
 	public boolean validate(String masterName, Jedis jedis) {
+		if (!services.containsKey(masterName))
+			return false;
+
 		if (!jedis.getClient().getHost()
-				.equals(masterInstances.get(masterName).getHost())
-				|| jedis.getClient().getPort() != (masterInstances
-						.get(masterName).getPort())) {
-			System.out
-					.println("Validation found that "
-							+ jedis.getClient().getHost()
-							+ ":"
-							+ jedis.getClient().getPort()
-							+ " is not the same as the expected master determined by Sentinel at "
-							+ masterInstances.get(masterName).getHost() + ":"
-							+ masterInstances.get(masterName).getPort());
+				.equals(services.get(masterName).getHost())
+				|| jedis.getClient().getPort() != (services.get(masterName)
+						.getPort())) {
+
+			StringBuilder stringBuilder = new StringBuilder();
+			stringBuilder
+					.append("Validation found that ")
+					.append(jedis.getClient().getHost())
+					.append(":")
+					.append(jedis.getClient().getPort())
+					.append(" is not the same as the expected master determined by Sentinel at ")
+					.append(services.get(masterName).getHost()).append(":")
+					.append(services.get(masterName).getPort());
+
+			logger.warn(stringBuilder.toString());
 			return false;
 		}
 		return true;
-	}
-
-	private class HostAndPort {
-		private String host;
-		private Integer port;
-
-		public HostAndPort(String h, Integer p) {
-			this.host = h;
-			this.port = p;
-		}
-
-		private String getHost() {
-			return host;
-		}
-
-		private void setHost(String host) {
-			this.host = host;
-		}
-
-		private Integer getPort() {
-			return port;
-		}
-
-		private void setPort(Integer port) {
-			this.port = port;
-		}
-
 	}
 }

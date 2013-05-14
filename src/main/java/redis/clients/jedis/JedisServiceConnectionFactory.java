@@ -1,6 +1,8 @@
 package redis.clients.jedis;
 
 import org.apache.commons.pool.BaseKeyedPoolableObjectFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * PoolableObjectFactory custom impl.
@@ -8,25 +10,20 @@ import org.apache.commons.pool.BaseKeyedPoolableObjectFactory;
 public class JedisServiceConnectionFactory extends
 		BaseKeyedPoolableObjectFactory {
 	private final Sentinel sentinel;
-	private final int timeout;
-	private final String password;
-	private final int database;
 
-	public JedisServiceConnectionFactory(final Sentinel sentinel,
-			final int defaultTimeout, final String password, final int database) {
+	private static final Logger logger = LoggerFactory
+			.getLogger(JedisServiceConnectionFactory.class);
+
+	public JedisServiceConnectionFactory(final Sentinel sentinel) {
 		this.sentinel = sentinel;
-		this.timeout = defaultTimeout;
-		this.password = password;
-		this.database = database;
 	}
 
 	@Override
 	public Object makeObject(final Object key) throws Exception {
 		try {
-			return sentinel.findMaster((String) key, this.timeout,
-					this.password, this.database);
+			return sentinel.findMaster((String) key);
 		} catch (Exception ex) {
-			System.out.println("Error making Jedis object (makeObject): "
+			logger.error("Error making Jedis object (makeObject): "
 					+ ex.getMessage());
 			throw ex;
 		} finally {
@@ -44,11 +41,13 @@ public class JedisServiceConnectionFactory extends
 					try {
 						jedis.quit();
 					} catch (Exception e) {
-						// Log
+						logger.error("Unable to quit the jedis instance :"
+								+ e.getMessage());
 					}
 					jedis.disconnect();
 				} catch (Exception e) {
-					// Log
+					logger.error("Unable to disconnect the jedis instance :"
+							+ e.getMessage());
 				}
 			}
 		}
@@ -60,15 +59,14 @@ public class JedisServiceConnectionFactory extends
 		if (obj instanceof Jedis) {
 			final Jedis jedis = (Jedis) obj;
 			try {
-				System.out.println("Validating Jedis - "
-						+ jedis.getClient().getHost() + ":"
-						+ jedis.getClient().getPort());
+				logger.info("Validating Jedis - " + jedis.getClient().getHost()
+						+ ":" + jedis.getClient().getPort());
 
 				if (jedis.isConnected() && jedis.ping().equals("PONG")
 						&& sentinel.validate(key.toString(), jedis))
 					return true;
 			} catch (final Exception e) {
-				System.out.println("Exception validating - " + e.getMessage());
+				logger.error("Exception validating - " + e.getMessage());
 				return false;
 			}
 		}

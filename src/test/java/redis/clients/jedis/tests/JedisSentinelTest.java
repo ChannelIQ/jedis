@@ -4,44 +4,46 @@ import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
 import org.apache.commons.pool.impl.GenericKeyedObjectPool.Config;
 import org.junit.After;
-import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisKeyedPool;
 import redis.clients.jedis.Sentinel;
+import redis.clients.jedis.SentinelConfig;
+import redis.clients.jedis.SentinelServiceConfig;
 
 public class JedisSentinelTest {
 	private static final String MASTER_NAME = "mymaster";
 	private static final String MASTER2_NAME = "mymaster2";
 	private static final int MASTER_COUNT = 2;
-	private static final List<Map<String, String>> sentinels;
+	private static final SentinelConfig config;
+	private static final Sentinel sentinel;
 
 	static {
-		sentinels = new ArrayList<Map<String, String>>();
-		sentinels.add(getSentinel("localhost", "16379"));
-		sentinels.add(getSentinel("localhost", "26379"));
-		sentinels.add(getSentinel("localhost", "26380"));
-		sentinels.add(getSentinel("localhost", "26381"));
+		// Setup Sentinel Configuration
+		config = new SentinelConfig();
+		config.addSentinelInstance("localhost", 16379);
+		config.addSentinelInstance("localhost", 26379);
+		config.addSentinelInstance("localhost", 26380);
+		config.addSentinelInstance("localhost", 26381);
+
+		// Setup Services (Masters) Configuration
+		SentinelServiceConfig masterConfig = new SentinelServiceConfig(
+				MASTER_NAME, "foobared");
+		SentinelServiceConfig master2Config = new SentinelServiceConfig(
+				MASTER2_NAME, "foobared");
+		sentinel = new Sentinel(config, masterConfig, master2Config);
 	}
 
-	private static Map<String, String> getSentinel(String ip, String port) {
-		final Map<String, String> sentinel = new HashMap<String, String>();
-		sentinel.put("ip", ip);
-		sentinel.put("port", port);
-		return sentinel;
-	}
-
-	@Before
-	public void setup() throws InterruptedException {
+	@BeforeClass
+	public static void setup() throws InterruptedException {
 		Thread.sleep(5000);
 	}
 
@@ -94,9 +96,7 @@ public class JedisSentinelTest {
 		poolConfig.whenExhaustedAction = 0;
 		poolConfig.testOnBorrow = true;
 
-		Sentinel sentinel = new Sentinel(sentinels);
-		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel,
-				"foobared");
+		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel);
 
 		int i = 0;
 		while (i < 5) {
@@ -121,9 +121,7 @@ public class JedisSentinelTest {
 		poolConfig.whenExhaustedAction = 0;
 		poolConfig.testOnBorrow = true;
 
-		Sentinel sentinel = new Sentinel(sentinels);
-		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel,
-				"foobared");
+		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel);
 
 		// mymaster
 		Jedis j = pool.getResource(MASTER_NAME);
@@ -145,18 +143,16 @@ public class JedisSentinelTest {
 		poolConfig.whenExhaustedAction = 0;
 		poolConfig.testOnBorrow = true;
 
-		Sentinel sentinel = new Sentinel(sentinels);
-		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel,
-				"foobared");
+		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel);
 
-		// mymaster
-		Jedis j = pool.getResource(MASTER_NAME);
+		// mymaster2
+		Jedis j = pool.getResource(MASTER2_NAME);
 		assertEquals("127.0.0.1", j.getClient().getHost());
-		assertEquals(6379, j.getClient().getPort());
+		assertEquals(6479, j.getClient().getPort());
 
 		// Fail a master
 		j.shutdown();
-		System.out.println("Shutdown of mymaster service - MASTER");
+		System.out.println("Shutdown of mymaster service - MASTER2");
 
 		// Wait until the master is shut down
 		try {
@@ -167,18 +163,18 @@ public class JedisSentinelTest {
 			System.out.println(ex.getMessage());
 		}
 
-		pool.returnResource(MASTER_NAME, j);
+		pool.returnResource(MASTER2_NAME, j);
 		int passes = 5;
 
 		while (passes > 0) {
-			Thread.sleep(3000);
+			Thread.sleep(4500);
 			try {
 				System.out.println("Testing connection to new slave");
 
 				// Test failover to the new slave
-				Jedis slave = pool.getResource(MASTER_NAME);
+				Jedis slave = pool.getResource(MASTER2_NAME);
 				assertEquals("127.0.0.1", slave.getClient().getHost());
-				assertEquals(6380, slave.getClient().getPort());
+				assertEquals(6480, slave.getClient().getPort());
 				System.out.println(slave.getClient().getPort());
 				passes = 0;
 			} catch (Exception ex) {
@@ -192,9 +188,9 @@ public class JedisSentinelTest {
 
 		JedisKeyedPool pool2 = new JedisKeyedPool(sentinel);
 		// Test failover to the new slave
-		Jedis slave = pool2.getResource(MASTER_NAME);
+		Jedis slave = pool2.getResource(MASTER2_NAME);
 		assertEquals("127.0.0.1", slave.getClient().getHost());
-		assertEquals(6380, slave.getClient().getPort());
+		assertEquals(6480, slave.getClient().getPort());
 		System.out.println(slave.getClient().getPort());
 	}
 
@@ -209,9 +205,7 @@ public class JedisSentinelTest {
 		poolConfig.whenExhaustedAction = 0;
 		poolConfig.testOnBorrow = true;
 
-		Sentinel sentinel = new Sentinel(sentinels);
-		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel,
-				"foobared");
+		JedisKeyedPool pool = new JedisKeyedPool(poolConfig, sentinel);
 
 		// mymaster
 		Jedis j = pool.getResource(MASTER_NAME);
