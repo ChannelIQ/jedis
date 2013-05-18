@@ -2772,11 +2772,13 @@ public class Jedis extends BinaryJedis implements JedisCommands,
 	}
 
 	private Object getEvalResultRules(Object result) {
+
 		if (result == null)
 			return "";
 
-		if (result instanceof byte[])
+		if (result instanceof byte[]) {
 			return SafeEncoder.encode((byte[]) result);
+		}
 
 		/*
 		 * if (result instanceof Integer) return
