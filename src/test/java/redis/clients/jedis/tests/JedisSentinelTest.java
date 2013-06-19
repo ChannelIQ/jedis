@@ -4,10 +4,13 @@ import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
+import org.apache.commons.configuration.ConfigurationException;
+import org.apache.commons.configuration.PropertiesConfiguration;
 import org.apache.commons.pool.impl.GenericKeyedObjectPool.Config;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -22,23 +25,46 @@ public class JedisSentinelTest {
 	private static final String MASTER_NAME = "mymaster";
 	private static final String MASTER2_NAME = "mymaster2";
 	private static final int MASTER_COUNT = 2;
-	private static final SentinelConfig config;
-	private static final Sentinel sentinel;
+	private static SentinelConfig config;
+	private static Sentinel sentinel;
 
 	static {
-		// Setup Sentinel Configuration
-		config = new SentinelConfig();
-		config.addSentinelInstance("localhost", 16379);
-		config.addSentinelInstance("localhost", 26379);
-		config.addSentinelInstance("localhost", 26380);
-		config.addSentinelInstance("localhost", 26381);
+		try {
+			PropertiesConfiguration confFile = new PropertiesConfiguration(
+					"sentinel.properties");
 
-		// Setup Services (Masters) Configuration
-		SentinelServiceConfig masterConfig = new SentinelServiceConfig(
-				MASTER_NAME, "foobared");
-		SentinelServiceConfig master2Config = new SentinelServiceConfig(
-				MASTER2_NAME, "foobared");
-		sentinel = new Sentinel(config, masterConfig, master2Config);
+			List<Object> sentinels = confFile.getList("sentinel.sentinels");
+
+			// Setup Sentinel Configuration
+			config = new SentinelConfig();
+
+			for (Object sentinel : sentinels) {
+				String host = confFile.getString("sentinel." + sentinel
+						+ ".host");
+				int port = confFile.getInt("sentinel." + sentinel + ".port");
+				config.addSentinelInstance(host, port);
+			}
+
+			List<Object> services = confFile.getList("sentinel.services");
+			ArrayList<SentinelServiceConfig> configs = new ArrayList<SentinelServiceConfig>();
+			for (Object service : services) {
+				String name = confFile.getString("sentinel.services." + service
+						+ ".name");
+				String password = confFile.getString("sentinel.services."
+						+ service + ".password");
+				SentinelServiceConfig masterConfig;
+				if (password != null && !password.equals("")) {
+					masterConfig = new SentinelServiceConfig(name, "foobared");
+				} else {
+					masterConfig = new SentinelServiceConfig(name);
+				}
+				configs.add(masterConfig);
+			}
+			sentinel = new Sentinel(config,
+					configs.toArray(new SentinelServiceConfig[configs.size()]));
+		} catch (ConfigurationException e) {
+			e.printStackTrace();
+		}
 	}
 
 	@BeforeClass
